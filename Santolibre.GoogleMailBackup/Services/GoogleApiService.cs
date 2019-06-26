@@ -24,6 +24,8 @@ namespace Santolibre.GoogleMailBackup.Services
         {
             _logger = logger;
 
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
             UserCredential credential;
 
             using (var stream = new FileStream("credentials.json", FileMode.Open, FileAccess.Read))
@@ -82,7 +84,7 @@ namespace Santolibre.GoogleMailBackup.Services
             {
                 if (header.Name == "Date")
                 {
-                    var dateTimePattern1 = @"([A-Za-z]{3}, \d+ [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} [+-]\d{4})";
+                    var dateTimePattern1 = @"([A-Za-z]{3}, \d+ [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} ([+-]\d{4}|GMT))";
                     var dateTimePattern2 = @"(\d+ [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} [+-]\d{4})";
                     DateTime dateTime;
                     if (Regex.IsMatch(header.Value, dateTimePattern1))
