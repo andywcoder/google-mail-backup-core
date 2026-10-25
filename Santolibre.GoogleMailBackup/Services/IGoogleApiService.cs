@@ -1,10 +1,11 @@
-﻿using Santolibre.GoogleMailBackup.Models;
+using Santolibre.GoogleMailBackup.Models;
 using System.Collections.Generic;
 
 namespace Santolibre.GoogleMailBackup.Services
 {
     public interface IGoogleApiService
     {
-        List<EmailThread> GetEmailThreads(string query);
+        IReadOnlyList<string> GetThreadIds(string query);
+        EmailThread GetEmailThread(string threadId);
     }
 }

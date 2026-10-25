@@ -2,6 +2,7 @@
 using iText.Kernel.Pdf;
 using iText.Kernel.Utils;
 using Microsoft.Extensions.Logging;
+using Santolibre.GoogleMailBackup.Models;
 using System;
 using System.IO;
 using System.Linq;
@@ -23,13 +24,28 @@ namespace Santolibre.GoogleMailBackup.Services
             _logger = logger;
         }
 
-        public void ExportEmails(string query, string exportPath)
+        public ExportResult ExportEmails(string query, string exportPath, Action<int>? onThreadsFound = null, Action<int, int>? onThreadStarting = null, Action<string>? onThreadFailed = null)
         {
-            var emailThreads = _googleApiService.GetEmailThreads(query);
-            foreach (var emailThread in emailThreads)
+            var threadIds = _googleApiService.GetThreadIds(query);
+            _logger.LogInformation($"Found {threadIds.Count} threads");
+            onThreadsFound?.Invoke(threadIds.Count);
+
+            var exported = 0;
+            var failed = 0;
+
+            for (var i = 0; i < threadIds.Count; i++)
             {
+                var threadId = threadIds[i];
+                onThreadStarting?.Invoke(i + 1, threadIds.Count);
+
                 try
                 {
+                    var emailThread = _googleApiService.GetEmailThread(threadId);
+                    if (emailThread.Emails.Count == 0)
+                    {
+                        throw new InvalidOperationException("None of the messages in the thread could be parsed, see the errors above");
+                    }
+
                     var emailThreadDate = emailThread.Emails.Last().DateCreated.ToString("yyyy-MM-dd HH-mm-ss");
                     var emailThreadSubject = emailThread.Emails.First().Subject.ToValidFileName();
                     var emailThreadSender = new MailAddress(emailThread.Emails.First().From);
@@ -121,12 +137,18 @@ table.sl-header td {{
                             }
                         }
                     }
+
+                    exported++;
                 }
                 catch (Exception e)
                 {
-                    _logger.LogError(e, "PDF conversion error");
+                    failed++;
+                    _logger.LogError(e, $"PDF conversion error, ThreadId={threadId}");
+                    onThreadFailed?.Invoke(threadId);
                 }
             }
+
+            return new ExportResult(exported, failed);
         }
     }
 }

@@ -1,7 +1,7 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using Santolibre.GoogleMailBackup.Services;
 using System;
-using System.Linq;
+using System.IO;
 
 namespace Santolibre.GoogleMailBackup
 {
@@ -16,47 +16,38 @@ namespace Santolibre.GoogleMailBackup
             _logger = logger;
         }
 
-        public void Run(string[] args)
+        public int Run(string query, string exportPath, string logFile)
         {
             var startTime = DateTime.Now;
 
-            var query = args.SingleOrDefault(x => x.Contains("--query="));
-            if (string.IsNullOrEmpty(query))
-            {
-                _logger.LogError("Parameter --query is missing");
-                return;
-            }
-            else
-            {
-                query = query.Replace("--query=", "");
-            }
-
-            var exportPath = args.SingleOrDefault(x => x.Contains("--export-path="));
-            if (string.IsNullOrEmpty(exportPath))
-            {
-                _logger.LogError("Parameter --export-path is missing");
-                return;
-            }
-            else
-            {
-                exportPath = exportPath.Replace("--export-path=", "");
-            }
-
             try
             {
-                _logger.LogInformation("Export emails");
+                Directory.CreateDirectory(exportPath);
 
-                _emailService.ExportEmails(query, exportPath);
+                _logger.LogInformation($"Export emails, Query={query}, ExportPath={exportPath}");
+
+                var result = _emailService.ExportEmails(
+                    query,
+                    exportPath,
+                    threadCount => Console.WriteLine($"Found {threadCount} emails"),
+                    (current, total) => Console.WriteLine($"Backing up email {current}/{total}..."),
+                    threadId => Console.WriteLine($"  Failed to back up thread {threadId}"));
+
+                var elapsed = DateTime.Now - startTime;
+                _logger.LogInformation($"Done, Exported={result.Exported}, Failed={result.Failed}, Seconds={elapsed.TotalSeconds}");
+
+                Console.WriteLine($"Done: {result.Exported} backed up, {result.Failed} failed ({elapsed.TotalSeconds:0} seconds)");
+                Console.WriteLine($"Log file: {logFile}");
+
+                return result.Failed == 0 ? 0 : 1;
             }
-            catch (AggregateException ex)
+            catch (Exception ex)
             {
-                foreach (var e in ex.InnerExceptions)
-                {
-                    _logger.LogError(e.Message);
-                }
+                _logger.LogError(ex, "Export failed");
+                Console.Error.WriteLine($"Export failed: {ex.Message}");
+                Console.Error.WriteLine($"Details in log file: {logFile}");
+                return 1;
             }
-
-            _logger.LogInformation($"Done ({(DateTime.Now - startTime).TotalSeconds} seconds)");
         }
     }
 }

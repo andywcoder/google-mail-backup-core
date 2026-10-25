@@ -1,4 +1,5 @@
-﻿using Google.Apis.Auth.OAuth2;
+﻿using Google;
+using Google.Apis.Auth.OAuth2;
 using Google.Apis.Gmail.v1;
 using Google.Apis.Gmail.v1.Data;
 using Google.Apis.Services;
@@ -28,15 +29,15 @@ namespace Santolibre.GoogleMailBackup.Services
 
             UserCredential credential;
 
-            using (var stream = new FileStream("credentials.json", FileMode.Open, FileAccess.Read))
+            using (var stream = new FileStream(Path.Combine(AppContext.BaseDirectory, "credentials.json"), FileMode.Open, FileAccess.Read))
             {
                 string tokenFilename = "token.json";
                 credential = GoogleWebAuthorizationBroker.AuthorizeAsync(
-                    GoogleClientSecrets.Load(stream).Secrets,
+                    GoogleClientSecrets.FromStream(stream).Secrets,
                     new string[] { GmailService.Scope.GmailReadonly },
                     "andreas.wyss@gmail.com",
                     System.Threading.CancellationToken.None,
-                    new FileDataStore(tokenFilename, true)).Result;
+                    new FileDataStore(Path.Combine(AppContext.BaseDirectory, tokenFilename), true)).Result;
             }
 
             _gmailService = new GmailService(new BaseClientService.Initializer()
@@ -46,34 +47,49 @@ namespace Santolibre.GoogleMailBackup.Services
             });
         }
 
-        public List<EmailThread> GetEmailThreads(string query)
+        public IReadOnlyList<string> GetThreadIds(string query)
         {
-            var emailThreads = new List<EmailThread>();
-            var messageThreads = GetMessageThreads(query);
-            foreach (var thread in messageThreads.Threads)
+            var threadIds = new List<string>();
+            string? pageToken = null;
+
+            do
             {
-                var emailThread = new EmailThread();
-                var fullThread = GetMessageThread(thread.Id);
-                _logger.LogInformation($"Process thread, Id={fullThread.Id}, MessageCount={fullThread.Messages.Count}");
+                var request = _gmailService.Users.Threads.List("me");
+                request.Q = query;
+                request.MaxResults = 500;
+                request.PageToken = pageToken;
 
-                foreach (var message in fullThread.Messages)
+                var response = ExecuteWithRetry(() => request.Execute());
+                threadIds.AddRange((response.Threads ?? new List<Thread>()).Select(x => x.Id));
+                pageToken = response.NextPageToken;
+
+                _logger.LogInformation($"Listed threads, Count={threadIds.Count}");
+            }
+            while (!string.IsNullOrEmpty(pageToken));
+
+            return threadIds;
+        }
+
+        public EmailThread GetEmailThread(string threadId)
+        {
+            var emailThread = new EmailThread();
+            var fullThread = GetMessageThread(threadId);
+            _logger.LogInformation($"Process thread, Id={fullThread.Id}, MessageCount={fullThread.Messages.Count}");
+
+            foreach (var message in fullThread.Messages)
+            {
+                _logger.LogInformation($"Process message, Id={message.Id}");
+                try
                 {
-                    var fullMessage = GetMessage(message.Id);
-                    _logger.LogInformation($"Process message, Id={message.Id}");
-                    try
-                    {
-                        emailThread.Emails.Add(ProcessMessage(fullMessage));
-                    }
-                    catch (Exception e)
-                    {
-                        _logger.LogError(e, "Message parsing error");
-                    }
+                    emailThread.Emails.Add(ProcessMessage(message));
                 }
-
-                emailThreads.Add(emailThread);
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "Message parsing error");
+                }
             }
 
-            return emailThreads;
+            return emailThread;
         }
 
         private Email ProcessMessage(Message message)
@@ -146,9 +162,17 @@ namespace Santolibre.GoogleMailBackup.Services
 
             if (!string.IsNullOrEmpty(parentMessagePart.Filename))
             {
-                var attachment = GetAttachment(messageId, parentMessagePart.Body.AttachmentId);
-                var data = attachment.Data.UrlSafeBase64StringToByteArray();
-                email.Attachments.Add(new EmailAttachment() { Filename = parentMessagePart.Filename, MimeType = parentMessagePart.MimeType, Data = data });
+                // Only PDF attachments are merged into the export, so don't spend API quota on downloading the rest
+                if (parentMessagePart.MimeType == "application/pdf")
+                {
+                    var attachment = GetAttachment(messageId, parentMessagePart.Body.AttachmentId);
+                    var data = attachment.Data.UrlSafeBase64StringToByteArray();
+                    email.Attachments.Add(new EmailAttachment() { Filename = parentMessagePart.Filename, MimeType = parentMessagePart.MimeType, Data = data });
+                }
+                else
+                {
+                    _logger.LogInformation($"Skip attachment, Filename={parentMessagePart.Filename}, MimeType={parentMessagePart.MimeType}");
+                }
             }
             else if (parentMessagePart.MimeType == "text/plain" || parentMessagePart.MimeType == "text/html")
             {
@@ -159,50 +183,64 @@ namespace Santolibre.GoogleMailBackup.Services
 
         private (string MimeType, string Content) GetMessagePartTextOrHtmlContent(MessagePart part)
         {
+            // Not parsed with System.Net.Mime.ContentType, which throws on slightly malformed headers found in real emails
             var contentTypeHeader = part.Headers.FirstOrDefault(x => x.Name == "Content-Type");
-            var contentType = contentTypeHeader != null ? new ContentType(contentTypeHeader.Value) : new ContentType($"{part.MimeType}; charset=utf-8");
+            var charSet = contentTypeHeader != null ? Regex.Match(contentTypeHeader.Value, @"charset\s*=\s*""?([^"";\s]+)", RegexOptions.IgnoreCase).Groups[1].Value : "";
             var data = part.Body.Data.UrlSafeBase64StringToByteArray();
+            if (string.IsNullOrEmpty(charSet))
+            {
+                _logger.LogWarning($"Content type {part.MimeType} has no charSet specified, assuming utf-8");
+                charSet = "utf-8";
+            }
+
             try
             {
-                if (contentType.CharSet == null)
-                {
-                    _logger.LogWarning($"Content type {contentType.MediaType} has no charSet specified, assuming utf-8");
-                    contentType.CharSet = "utf-8";
-                }
-                var encoding = Encoding.GetEncoding(contentType.CharSet.ToLower());
+                var encoding = Encoding.GetEncoding(charSet.ToLower());
                 var messagePartContent = encoding.GetString(data);
                 return (part.MimeType, messagePartContent);
             }
             catch (Exception e)
             {
-                throw new Exception($"character set {contentType.CharSet} not supported", e);
+                throw new Exception($"character set {charSet} not supported", e);
             }
-        }
-
-        private ListThreadsResponse GetMessageThreads(string query)
-        {
-            var request = _gmailService.Users.Threads.List("me");
-            request.Q = query;
-            var messageThreads = request.Execute();
-            return messageThreads;
         }
 
         private Thread GetMessageThread(string threadId)
         {
             var request = _gmailService.Users.Threads.Get("me", threadId);
-            return request.Execute();
-        }
-
-        private Message GetMessage(string messageId)
-        {
-            var request = _gmailService.Users.Messages.Get("me", messageId);
-            return request.Execute();
+            return ExecuteWithRetry(() => request.Execute());
         }
 
         private MessagePartBody GetAttachment(string messageId, string attachmentId)
         {
             var request = _gmailService.Users.Messages.Attachments.Get("me", messageId, attachmentId);
-            return request.Execute();
+            return ExecuteWithRetry(() => request.Execute());
+        }
+
+        // Gmail allows ~250 quota units per minute per user, so on a rate limit wait for the window to reset and retry
+        private T ExecuteWithRetry<T>(Func<T> execute)
+        {
+            const int maxRetries = 6;
+
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return execute();
+                }
+                catch (GoogleApiException e) when (attempt <= maxRetries && IsRateLimitError(e))
+                {
+                    var delay = TimeSpan.FromSeconds(Math.Min(15 * attempt, 60));
+                    _logger.LogWarning($"Gmail rate limit reached, retrying in {delay.TotalSeconds} seconds (attempt {attempt}/{maxRetries})");
+                    System.Threading.Thread.Sleep(delay);
+                }
+            }
+        }
+
+        private static bool IsRateLimitError(GoogleApiException e)
+        {
+            return e.HttpStatusCode == System.Net.HttpStatusCode.TooManyRequests
+                || (e.HttpStatusCode == System.Net.HttpStatusCode.Forbidden && e.Error?.Errors?.Any(x => x.Reason == "rateLimitExceeded" || x.Reason == "userRateLimitExceeded") == true);
         }
     }
 }

@@ -2,7 +2,7 @@
 {
     public class EmailContent
     {
-        public string MimeType { get; set; }
-        public string Content { get; set; }
+        public string MimeType { get; set; } = string.Empty;
+        public string Content { get; set; } = string.Empty;
     }
 }
