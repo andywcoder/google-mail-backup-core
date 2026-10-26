@@ -21,6 +21,8 @@ namespace Santolibre.GoogleMailBackup.Services
         private GmailService _gmailService;
         private readonly ILogger<GoogleApiService> _logger;
 
+        public event Action<TimeSpan, int, int>? RateLimited;
+
         public GoogleApiService(ILogger<GoogleApiService> logger)
         {
             _logger = logger;
@@ -98,18 +100,20 @@ namespace Santolibre.GoogleMailBackup.Services
 
             foreach (var header in message.Payload.Headers)
             {
-                if (header.Name == "Date")
+                if (string.Equals(header.Name, "Date", StringComparison.OrdinalIgnoreCase))
                 {
                     var dateTimePattern1 = @"([A-Za-z]{3}, \d+ [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} ([+-]\d{4}|GMT))";
                     var dateTimePattern2 = @"(\d+ [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} [+-]\d{4})";
+                    // UT and UTC are valid RFC 822 zones but DateTime.Parse only knows GMT
+                    var dateValue = Regex.Replace(header.Value, @"\bUTC?\b", "GMT");
                     DateTime dateTime;
-                    if (Regex.IsMatch(header.Value, dateTimePattern1))
+                    if (Regex.IsMatch(dateValue, dateTimePattern1))
                     {
-                        dateTime = DateTime.Parse(Regex.Match(header.Value, dateTimePattern1).Groups[0].Captures[0].Value);
+                        dateTime = DateTime.Parse(Regex.Match(dateValue, dateTimePattern1).Groups[0].Captures[0].Value);
                     }
-                    else if (Regex.IsMatch(header.Value, dateTimePattern2))
+                    else if (Regex.IsMatch(dateValue, dateTimePattern2))
                     {
-                        dateTime = DateTime.Parse(Regex.Match(header.Value, dateTimePattern2).Groups[0].Captures[0].Value);
+                        dateTime = DateTime.Parse(Regex.Match(dateValue, dateTimePattern2).Groups[0].Captures[0].Value);
                     }
                     else
                     {
@@ -117,15 +121,15 @@ namespace Santolibre.GoogleMailBackup.Services
                     }
                     email.DateCreated = dateTime;
                 }
-                if (header.Name == "To")
+                if (string.Equals(header.Name, "To", StringComparison.OrdinalIgnoreCase))
                 {
                     email.To = header.Value;
                 }
-                if (header.Name == "From")
+                if (string.Equals(header.Name, "From", StringComparison.OrdinalIgnoreCase))
                 {
                     email.From = header.Value;
                 }
-                if (header.Name == "Subject")
+                if (string.Equals(header.Name, "Subject", StringComparison.OrdinalIgnoreCase))
                 {
                     email.Subject = header.Value;
                 }
@@ -184,8 +188,13 @@ namespace Santolibre.GoogleMailBackup.Services
         private (string MimeType, string Content) GetMessagePartTextOrHtmlContent(MessagePart part)
         {
             // Not parsed with System.Net.Mime.ContentType, which throws on slightly malformed headers found in real emails
-            var contentTypeHeader = part.Headers.FirstOrDefault(x => x.Name == "Content-Type");
+            var contentTypeHeader = part.Headers.FirstOrDefault(x => string.Equals(x.Name, "Content-Type", StringComparison.OrdinalIgnoreCase));
             var charSet = contentTypeHeader != null ? Regex.Match(contentTypeHeader.Value, @"charset\s*=\s*""?([^"";\s]+)", RegexOptions.IgnoreCase).Groups[1].Value : "";
+            if (string.IsNullOrEmpty(part.Body?.Data))
+            {
+                return (part.MimeType, string.Empty);
+            }
+
             var data = part.Body.Data.UrlSafeBase64StringToByteArray();
             if (string.IsNullOrEmpty(charSet))
             {
@@ -193,15 +202,25 @@ namespace Santolibre.GoogleMailBackup.Services
                 charSet = "utf-8";
             }
 
+            return (part.MimeType, GetEncoding(charSet).GetString(data));
+        }
+
+        private Encoding GetEncoding(string charSet)
+        {
+            var name = charSet.ToLower();
+            if (name == "utf8")
+            {
+                name = "utf-8";
+            }
+
             try
             {
-                var encoding = Encoding.GetEncoding(charSet.ToLower());
-                var messagePartContent = encoding.GetString(data);
-                return (part.MimeType, messagePartContent);
+                return Encoding.GetEncoding(name);
             }
-            catch (Exception e)
+            catch (ArgumentException)
             {
-                throw new Exception($"character set {charSet} not supported", e);
+                _logger.LogWarning($"Character set {charSet} not supported, assuming utf-8");
+                return Encoding.UTF8;
             }
         }
 
@@ -232,6 +251,7 @@ namespace Santolibre.GoogleMailBackup.Services
                 {
                     var delay = TimeSpan.FromSeconds(Math.Min(15 * attempt, 60));
                     _logger.LogWarning($"Gmail rate limit reached, retrying in {delay.TotalSeconds} seconds (attempt {attempt}/{maxRetries})");
+                    RateLimited?.Invoke(delay, attempt, maxRetries);
                     System.Threading.Thread.Sleep(delay);
                 }
             }

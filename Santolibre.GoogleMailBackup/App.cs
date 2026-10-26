@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Santolibre.GoogleMailBackup.Services;
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Santolibre.GoogleMailBackup
@@ -16,7 +17,7 @@ namespace Santolibre.GoogleMailBackup
             _logger = logger;
         }
 
-        public int Run(string query, string exportPath, string logFile)
+        public int Run(string? query, IReadOnlyList<string>? threadIds, string exportPath, int skip, string logFile)
         {
             var startTime = DateTime.Now;
 
@@ -24,14 +25,17 @@ namespace Santolibre.GoogleMailBackup
             {
                 Directory.CreateDirectory(exportPath);
 
-                _logger.LogInformation($"Export emails, Query={query}, ExportPath={exportPath}");
+                _logger.LogInformation($"Export emails, Query={query}, ThreadIds={(threadIds == null ? "" : string.Join(",", threadIds))}, ExportPath={exportPath}, Skip={skip}");
 
                 var result = _emailService.ExportEmails(
                     query,
+                    threadIds,
                     exportPath,
+                    skip,
                     threadCount => Console.WriteLine($"Found {threadCount} emails"),
-                    (current, total) => Console.WriteLine($"Backing up email {current}/{total}..."),
-                    threadId => Console.WriteLine($"  Failed to back up thread {threadId}"));
+                    (current, total, sender, subject) => Console.WriteLine(string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(sender) ? $"Backing up email {current}/{total}..." : $"Backing up email {current}/{total} ({sender}, {subject})..."),
+                    threadId => Console.WriteLine($"  Failed to back up thread {threadId}"),
+                    (delay, attempt, maxRetries) => Console.WriteLine($"  Gmail rate limit reached, waiting {delay.TotalSeconds:0} seconds (retry {attempt}/{maxRetries})..."));
 
                 var elapsed = DateTime.Now - startTime;
                 _logger.LogInformation($"Done, Exported={result.Exported}, Failed={result.Failed}, Seconds={elapsed.TotalSeconds}");

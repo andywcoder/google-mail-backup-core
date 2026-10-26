@@ -25,7 +25,9 @@ On the first run a browser window opens to authorize read-only access. The resul
 dotnet run --project Santolibre.GoogleMailBackup -- --query <gmail-search> --export-path <directory>
 
   -q, --query          Gmail search query, e.g. "label:invoices after:2024/01/01"
+  -t, --thread-ids     Comma-separated thread ids to export instead of searching (use either this or --query)
   -o, --export-path    Directory the PDFs are written to (created if missing)
+  -s, --skip           Number of emails to skip at the start of the result list, e.g. those already backed up by a former run (default: 0)
   -l, --log-file       Log file to append to (default: google-mail-backup.log next to the executable)
   -h, --help           Show help
   --version            Show version
