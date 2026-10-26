@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Santolibre.GoogleMailBackup.Models;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Mime;
@@ -114,6 +115,11 @@ namespace Santolibre.GoogleMailBackup.Services
                     else if (Regex.IsMatch(dateValue, dateTimePattern2))
                     {
                         dateTime = DateTime.Parse(Regex.Match(dateValue, dateTimePattern2).Groups[0].Captures[0].Value);
+                    }
+                    else if (DateTime.TryParse(Regex.Replace(dateValue, @"^[A-Za-z]{3},\s*", ""), CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedDateTime))
+                    {
+                        // Looser forms, e.g. a two-digit year or no seconds: "28 Jul 09 04:18 -0800"
+                        dateTime = parsedDateTime;
                     }
                     else
                     {

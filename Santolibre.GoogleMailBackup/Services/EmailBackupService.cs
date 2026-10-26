@@ -214,6 +214,10 @@ table.sl-header td {{
         // iText rejects some real-world images and CSS (e.g. odd media queries, garbage lengths), so retry with less rather than losing the email
         private byte[] ConvertHtmlToPdf(string html)
         {
+            // Linked stylesheets are never fetched: they are often gone, and loading them (plus the fonts they pull in) can take
+            // close to a minute per email and even make iText fail with "cannot be embedded due to licensing restrictions"
+            html = RemoveLinkedStylesheets(html);
+
             var attempts = new (string Name, Func<string, string> Simplify)[]
             {
                 ("as is", x => x),
@@ -236,6 +240,11 @@ table.sl-header td {{
                     _logger.LogWarning(e, $"HTML conversion failed ({attempts[attempt].Name}), retrying {attempts[attempt + 1].Name}");
                 }
             }
+        }
+
+        private static string RemoveLinkedStylesheets(string html)
+        {
+            return Regex.Replace(html, @"<link\b[^>]*\brel\s*=\s*[""']?stylesheet[^>]*>", "", RegexOptions.IgnoreCase);
         }
 
         private static string RemoveImages(string html)

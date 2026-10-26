@@ -25,6 +25,12 @@ namespace Santolibre.GoogleMailBackup.Services
 
         public override Stream? GetInputStreamByUrl(Uri url)
         {
+            // Relative or local references (no host) can't be loaded from an email anyway
+            if (url.Scheme != Uri.UriSchemeHttp && url.Scheme != Uri.UriSchemeHttps)
+            {
+                return null;
+            }
+
             if (_failedHosts.TryGetValue(url.Host, out var failedAt))
             {
                 if (DateTime.UtcNow - failedAt < FailedHostBackoff)
